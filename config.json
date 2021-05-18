@@ -1,0 +1,16 @@
+{
+  "ua": "Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3264.0 Safari/537.36",
+  "laevitas": {
+    "pages": {
+      "options_chain": "https://app.laevitas.ch/dashboard/$INSTRUMENT/deribit/options/chain",
+      "volatility_page": "https://app.laevitas.ch/dashboard/$INSTRUMENT/deribit/options/volatility"
+    },
+    "elements": {
+      "options_chain": "ngx-option-chain",
+      "expiries_button": "ngx-option-chain > div.d-flex.px-4 > div:nth-child(2) > nb-select > button",
+      "expiries_list": ".option-list",
+      "expiries_list_items": ".option-list > nb-option",
+      "table_checkboxes": ".ng-star-inserted input[type=\"checkbox\"]"
+    }
+  }
+}

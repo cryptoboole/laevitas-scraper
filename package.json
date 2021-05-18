@@ -1,0 +1,25 @@
+{
+  "name": "laevitas-scraper",
+  "version": "1.0.0",
+  "description": "headless laevitas scraper and deployment framework",
+  "main": "index.js",
+  "scripts": {
+    "start": "HEADLESS=true node index.js btc",
+    "verbose": "HEADLESS=true DEBUG=laevitas-scraper* node index.js btc",
+    "debug": "HEADLESS=false DEBUG=laevitas-scraper* node index.js btc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Crypto Boole <cryptoboole@protonmail.com>",
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "@supercharge/promise-pool": "^1.7.0",
+    "debug": "^4.3.1",
+    "lodash": "^4.17.21",
+    "mkdirp": "^1.0.4",
+    "moment": "^2.29.1",
+    "puppeteer": "^9.1.1"
+  },
+  "devDependencies": {
+    "eslint": "^7.26.0"
+  }
+}
