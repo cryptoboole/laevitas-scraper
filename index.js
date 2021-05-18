@@ -122,6 +122,9 @@ function saveObjToCsv(path, obj) {
     headless: runHeadless,
     userDataDir: path.join(__dirname, '.chrome'),
     args: [
+      '--no-sandbox', // NOTE: required for heroku deployment
+      // '--no-zygote',
+      // '--single-process',
       '--disable-infobars',
       '--window-position=0,0',
       '--ignore-certificate-errors',
