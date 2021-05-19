@@ -21,6 +21,10 @@ const scrapeRun = moment().format('YYYYMMDDHHmm');
 const saveLocation = path.join(__dirname, 'results', scrapeRun, INSTRUMENT);
 mkdirp.sync(saveLocation);
 
+// set ecosystem timeout
+const PPTR_TIMEOUT = Number(process.env.PPTR_TIMEOUT || 30000);
+debug('PUPPETEER TIMEOUT', PPTR_TIMEOUT);
+
 
 /////////////
 // HELPERS //
@@ -37,6 +41,7 @@ async function scrapeExpiry(browser, expiryLabel) {
 
   // instantiate page and wait for loading to finish
   const laevitasTab = await browser.newPage();
+  laevitasTab.setDefaultTimeout(PPTR_TIMEOUT);
   await laevitasTab.setViewport({ width: 1200, height: 800 });
   await laevitasTab.setUserAgent(config.ua);
   await laevitasTab.goto(config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
@@ -134,6 +139,7 @@ function saveObjToCsv(path, obj) {
 
   // instantiate page and wait for loading to finish
   const laevitasPage = await browser.newPage();
+  laevitasPage.setDefaultTimeout(PPTR_TIMEOUT);
   await laevitasPage.setViewport({ width: 1200, height: 800 });
   await laevitasPage.setUserAgent(config.ua);
   await laevitasPage.goto(config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
