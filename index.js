@@ -21,9 +21,11 @@ const scrapeRun = moment().format('YYYYMMDDHHmm');
 const saveLocation = path.join(__dirname, 'results', scrapeRun, INSTRUMENT);
 mkdirp.sync(saveLocation);
 
-// set ecosystem timeout
+// set ecosystem variables (timeout, concurrency)
 const PPTR_TIMEOUT = Number(process.env.PPTR_TIMEOUT || 30000);
 debug('PUPPETEER TIMEOUT', PPTR_TIMEOUT);
+const PPTR_CONCURRENCY = Number(process.env.PPTR_CONCURRENCY || 3);
+debug('PUPPETEER CONCURRENCY', PPTR_CONCURRENCY);
 
 
 /////////////
