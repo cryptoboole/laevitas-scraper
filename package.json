@@ -12,8 +12,12 @@
   "author": "Crypto Boole <cryptoboole@protonmail.com>",
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.17.0",
+    "@aws-sdk/s3-request-presigner": "^3.17.0",
     "@supercharge/promise-pool": "^1.7.0",
     "debug": "^4.3.1",
+    "discord.js": "^12.5.3",
+    "dotenv": "^10.0.0",
     "lodash": "^4.17.21",
     "mkdirp": "^1.0.4",
     "moment": "^2.29.1",

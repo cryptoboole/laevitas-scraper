@@ -1,7 +1,13 @@
 'use strict';
+
+// load .env (tentative)
+require('dotenv').config();
+
+// dependencies
 const debug = require('debug')('laevitas-scraper')
   , PromisePool = require('@supercharge/promise-pool')
   , puppeteer = require('puppeteer')
+  , Discord = require('discord.js')
   , moment = require('moment')
   , mkdirp = require('mkdirp')
   , path = require('path')
@@ -10,6 +16,7 @@ const debug = require('debug')('laevitas-scraper')
 
 // configuration
 const runHeadless = process.env.HEADLESS != 'false';
+const saveOutput = process.env.FILEOUTPUT == 'true';
 const config = require('./config.json');
 
 // check instrument argument is passed
@@ -19,7 +26,7 @@ const INSTRUMENT = process.argv[2];
 // state for scrape run
 const scrapeRun = moment().format('YYYYMMDDHHmm');
 const saveLocation = path.join(__dirname, 'results', scrapeRun, INSTRUMENT);
-mkdirp.sync(saveLocation);
+if (saveOutput) mkdirp.sync(saveLocation);
 
 // set ecosystem variables (timeout, concurrency)
 const PPTR_TIMEOUT = Number(process.env.PPTR_TIMEOUT || 30000);
@@ -49,7 +56,6 @@ async function scrapeExpiry(browser, expiryLabel) {
   await laevitasTab.goto(config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
   debug('TAB LOADED', expiryLabel);
 
-  
   // wait for the option-chain content to load and fetch expiries
   await laevitasTab.waitForSelector(config.laevitas.elements.options_chain);
   await laevitasTab.click(config.laevitas.elements.expiries_button);
@@ -85,7 +91,7 @@ async function scrapeExpiry(browser, expiryLabel) {
   await laevitasTab.waitForFunction(() => Array.from(document.querySelectorAll('table > tbody tr td:nth-child(2)')).reduce((m, cell) => m + (cell.innerText && cell.innerText.length === 0) ? 1 : 0, 0) === 0);
   const rowCount = await laevitasTab.$$eval('table > tbody tr', rows => rows.length);
   debug('ROWCOUNT', rowCount);
-  
+
   // extract header row array and 2-dimensional body array
   const thead = await laevitasTab.$$eval('table > thead th', elements => elements.map(element => element.innerText));
   const tbody = await laevitasTab.$$eval('table > tbody tr', rows => {
@@ -104,6 +110,7 @@ async function scrapeExpiry(browser, expiryLabel) {
 
 }
 
+/* CSV FILE SAVE */
 function saveObjToCsv(path, obj) {
   return new Promise((resolve, reject) => {
     const csvData = _.keys(_.first(obj)).join(',')+'\n'+_.map(obj, (dict) => (_.values(dict).join(','))).join('\n');
@@ -114,6 +121,39 @@ function saveObjToCsv(path, obj) {
   });
 }
 
+/* S3 UPLOADER */
+const { S3_BUCKET, REGION } = process.env;
+const S3Uploader = require('./S3Uploader');
+const s3 = new S3Uploader({ region: REGION, bucket: S3_BUCKET });
+
+/* DISCORD WEBHOOK CLIENT */
+const { DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN } = process.env;
+const webhookClient = new Discord.WebhookClient(DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN);
+async function sendToChannel(link, timer) {
+
+  // construct message
+  const embed = new Discord.MessageEmbed()
+    .setTitle(`${INSTRUMENT.toUpperCase()} ${moment().utc().format('YYYYMMDD HH:mm')}`)
+    .setDescription('Option chain data scraped from [laevitas.ch](https://laevitas.ch)')
+    .addFields(
+      {
+        name: 'download link',
+        value: `[${INSTRUMENT.toUpperCase()}_${moment().utc().format('YYYYMMDD')}](${link})`,
+        inline: true,
+      },
+      {
+        name: 'timer',
+        value: timer,
+        inline: true,
+      })
+    .setColor(INSTRUMENT === 'eth' ? '0074D9' : 'FF851B')
+    .setTimestamp()
+    .setFooter('laevitas option chain data', config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT))
+
+  // send webhook message
+  return await webhookClient.send('laevitas-scraper v1.1', { embeds: [embed] });
+
+}
 
 //////////
 // MAIN //
@@ -123,7 +163,7 @@ function saveObjToCsv(path, obj) {
 
   // initiate timer
   const hrstart = process.hrtime();
-  
+
   // instantiate
   const browser = await puppeteer.launch({
     headless: runHeadless,
@@ -147,7 +187,7 @@ function saveObjToCsv(path, obj) {
   await laevitasPage.goto(config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
   debug('PAGE LOADED', config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
 
-  
+
   // wait for the option-chain content to load
   await laevitasPage.waitForSelector(config.laevitas.elements.options_chain);
 
@@ -162,7 +202,7 @@ function saveObjToCsv(path, obj) {
 
   // const expiries = await laevitasPage.$$(config.laevitas.elements.expiries_list_items);
   // const dataMap = await Promise.all(_.map([expiries[0]], exp => scrapeExpiry(laevitasPage, exp)));
-  
+
   // 1. sequentially traverse expiries
   // const dataMap = await _.takeRight(expiryLabels, 3).reduce(async (previousPromise, nextExpiryLabel) => {
   //   await previousPromise;
@@ -183,10 +223,12 @@ function saveObjToCsv(path, obj) {
       // scrape the expiry data
       const [expiry, data] = await scrapeExpiry(browser, expiryLabel);
 
-      // save sraped data to csv
-      const outputPath = path.join(saveLocation, `${expiry}.csv`);
-      debug('SAVED', outputPath.replace(__dirname, ''));
-      await saveObjToCsv(outputPath, data);
+      // save individual expiry sraped data to csv
+      if (saveOutput) { // if we want to save file output
+        const outputPath = path.join(saveLocation, `${expiry}.csv`);
+        debug('SAVED', outputPath.replace(__dirname, ''));
+        await saveObjToCsv(outputPath, data);
+      }
 
       // push to concatenated array with expiry string embedded in data row
       concatenatedExpiries.push(_.map(data, row => ({ ...row, expiry })));
@@ -196,22 +238,35 @@ function saveObjToCsv(path, obj) {
 
     });
 
-  // save concatenated export
-  const concatenatedOutputPath = path.join(saveLocation, `${scrapeRun}_ALL.csv`);
-  await saveObjToCsv(concatenatedOutputPath, _.flatten(concatenatedExpiries));
-  debug('SAVED', concatenatedOutputPath.replace(__dirname, ''));
-
-  // log the results
-  if (errors && errors.length > 0) console.log(errors);
-  debug('FINISHED', results.length, 'FILES SAVED');
-
   // time process and set a randomm second async timeout to allow stuff to close
   const hrend = process.hrtime(hrstart);
   console.info('process timer: %ds %dms', hrend[0], hrend[1] / 1000000);
   await timeout(_.random(2000, 5000));
 
+  // save concatenated export
+  if (saveOutput) { // if we want to save file output
+    const concatenatedOutputPath = path.join(saveLocation, `${scrapeRun}_ALL.csv`);
+    await saveObjToCsv(concatenatedOutputPath, _.flatten(concatenatedExpiries));
+    debug('SAVED', concatenatedOutputPath.replace(__dirname, ''));
+  } else {
+
+    // upload to S3
+    const concatenatedOutputKey = path.join(scrapeRun, INSTRUMENT, `${scrapeRun}_${INSTRUMENT.toUpperCase()}.csv`);
+    const signedDownloadUrl = await s3.uploadObjCsv(concatenatedOutputKey, _.flatten(concatenatedExpiries));
+    debug('SAVED', path.join(`s3://${process.env.S3_BUCKET}`, concatenatedOutputKey));
+
+    // send discord hook
+    await sendToChannel(signedDownloadUrl, `${hrend[0]}s ${hrend[1] / 1000000}ms`);
+
+  }
+
+  // log the results
+  if (errors && errors.length > 0) console.log(errors);
+  debug('FINISHED', results.length, 'FILES SAVED');
+
   // close the headless browser
   await browser.close();
+  debug('EXIT');
+  process.exit(0);
 
 })().catch(err => console.error(err));
-
