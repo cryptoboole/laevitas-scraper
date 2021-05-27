@@ -11,12 +11,18 @@ const debug = require('debug')('laevitas-scraper')
   , moment = require('moment')
   , mkdirp = require('mkdirp')
   , path = require('path')
-  , _ = require('lodash')
-  , fs = require('fs');
+  , _ = require('lodash');
+
+// util
+const { mapListDict, asyncFilter, timeout, headerBodyToCsv, saveCsv } = require('./lib/util');
 
 // configuration
 const runHeadless = process.env.HEADLESS != 'false';
+debug('RUN HEADLESS', runHeadless);
 const saveOutput = process.env.FILEOUTPUT == 'true';
+debug('SAVE FILES', saveOutput);
+const sendWebhook = process.env.SENDHOOK != 'false';
+debug('TRIGGER WEBHOOK', sendWebhook);
 const config = require('./config.json');
 
 // check instrument argument is passed
@@ -36,15 +42,47 @@ debug('PUPPETEER CONCURRENCY', PPTR_CONCURRENCY);
 
 
 /////////////
-// HELPERS //
+// INTEROP //
 /////////////
 
-/* timeout and promise rejection handlers */
-const timeout = ms => new Promise(resolve => setTimeout(resolve, ms));
+/* S3 UPLOADER */
+const { S3_BUCKET, REGION } = process.env;
+const S3Uploader = require('./lib/S3Uploader');
+const s3 = new S3Uploader({ region: REGION, bucket: S3_BUCKET });
 
-// REF: https://advancedweb.hu/how-to-use-async-functions-with-array-filter-in-javascript/
-const asyncFilter = async (arr, predicate) => Promise.all(arr.map(predicate))
-  .then((results) => arr.filter((_v, index) => results[index]));
+/* DISCORD WEBHOOK CLIENT */
+const { DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN } = process.env;
+const webhookClient = new Discord.WebhookClient(DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN);
+async function sendToChannel(link, timer) {
+
+  // construct message
+  const embed = new Discord.MessageEmbed()
+    .setTitle(`${INSTRUMENT.toUpperCase()} ${moment().utc().format('YYYYMMDD HH:mm')}`)
+    .setDescription('Option chain data scraped from [laevitas.ch](https://laevitas.ch)')
+    .addFields(
+      {
+        name: 'download link',
+        value: `[${INSTRUMENT.toUpperCase()}_${moment().utc().format('YYYYMMDD')}](${link})`,
+        inline: true,
+      },
+      {
+        name: 'timer',
+        value: timer,
+        inline: true,
+      })
+    .setColor(INSTRUMENT === 'eth' ? '0074D9' : 'FF851B')
+    .setTimestamp()
+    .setFooter('laevitas option chain data', config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT))
+
+  // send webhook message
+  return await webhookClient.send('laevitas-scraper v1.1', { embeds: [embed] });
+
+}
+
+
+/////////////
+// HELPERS //
+/////////////
 
 async function scrapeExpiry(browser, expiryLabel) {
 
@@ -105,53 +143,9 @@ async function scrapeExpiry(browser, expiryLabel) {
   await laevitasTab.close();
 
   // return csv object
-  const sanitiseData = value => value.indexOf('\n') > -1 ? value.split('\n')[0] : value;
-  return [expiryLabel, _.map(tbody, row => _.zipObject(_.map(thead, _.trim), _.map(row, sanitiseData)))];
-
-}
-
-/* CSV FILE SAVE */
-function saveObjToCsv(path, obj) {
-  return new Promise((resolve, reject) => {
-    const csvData = _.keys(_.first(obj)).join(',')+'\n'+_.map(obj, (dict) => (_.values(dict).join(','))).join('\n');
-    fs.writeFile(path, csvData, (err) => {
-      if (err) return reject(err);
-      resolve();
-    });
-  });
-}
-
-/* S3 UPLOADER */
-const { S3_BUCKET, REGION } = process.env;
-const S3Uploader = require('./S3Uploader');
-const s3 = new S3Uploader({ region: REGION, bucket: S3_BUCKET });
-
-/* DISCORD WEBHOOK CLIENT */
-const { DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN } = process.env;
-const webhookClient = new Discord.WebhookClient(DISCORD_WEBHOOKID, DISCORD_WEBHOOKTOKEN);
-async function sendToChannel(link, timer) {
-
-  // construct message
-  const embed = new Discord.MessageEmbed()
-    .setTitle(`${INSTRUMENT.toUpperCase()} ${moment().utc().format('YYYYMMDD HH:mm')}`)
-    .setDescription('Option chain data scraped from [laevitas.ch](https://laevitas.ch)')
-    .addFields(
-      {
-        name: 'download link',
-        value: `[${INSTRUMENT.toUpperCase()}_${moment().utc().format('YYYYMMDD')}](${link})`,
-        inline: true,
-      },
-      {
-        name: 'timer',
-        value: timer,
-        inline: true,
-      })
-    .setColor(INSTRUMENT === 'eth' ? '0074D9' : 'FF851B')
-    .setTimestamp()
-    .setFooter('laevitas option chain data', config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT))
-
-  // send webhook message
-  return await webhookClient.send('laevitas-scraper v1.1', { embeds: [embed] });
+  const expiryData = mapListDict(thead, tbody);
+  debug('objKeys.len', Object.keys(expiryData[0]).length, thead.length);
+  return [expiryLabel, [thead, tbody]];
 
 }
 
@@ -187,7 +181,6 @@ async function sendToChannel(link, timer) {
   await laevitasPage.goto(config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
   debug('PAGE LOADED', config.laevitas.pages.options_chain.replace('$INSTRUMENT', INSTRUMENT));
 
-
   // wait for the option-chain content to load
   await laevitasPage.waitForSelector(config.laevitas.elements.options_chain);
 
@@ -200,38 +193,26 @@ async function sendToChannel(link, timer) {
   // extract all expiries
   const expiryLabels = await laevitasPage.$$eval(config.laevitas.elements.expiries_list_items, elements => elements.map(element => element.innerText));
 
-  // const expiries = await laevitasPage.$$(config.laevitas.elements.expiries_list_items);
-  // const dataMap = await Promise.all(_.map([expiries[0]], exp => scrapeExpiry(laevitasPage, exp)));
-
-  // 1. sequentially traverse expiries
-  // const dataMap = await _.takeRight(expiryLabels, 3).reduce(async (previousPromise, nextExpiryLabel) => {
-  //   await previousPromise;
-  //   return scrapeExpiry(browser, nextExpiryLabel);
-  // }, Promise.resolve());
-
-  // 2. parallel traverse expiries
-  // const dataMap = await Promise.all(expiryLabels.map(expiryLabel => scrapeExpiry(browser, expiryLabel)));
-
-  // 3. parallel limited traverse expiries
+  // parallel limited traverse expiries
   const concatenatedExpiries = []
   const { results, errors } = await PromisePool
-    // .for(_.takeRight(expiryLabels, 1))
+    // .for(_.takeRight(expiryLabels, 2))
     .for(expiryLabels)
     .withConcurrency(3)
     .process(async expiryLabel => {
 
-      // scrape the expiry data
+      // scrape the expiry data (data consists of [thead, tbody])
       const [expiry, data] = await scrapeExpiry(browser, expiryLabel);
 
-      // save individual expiry sraped data to csv
-      if (saveOutput) { // if we want to save file output
-        const outputPath = path.join(saveLocation, `${expiry}.csv`);
-        debug('SAVED', outputPath.replace(__dirname, ''));
-        await saveObjToCsv(outputPath, data);
-      }
+      // DEBUG: save individual expiry sraped data to csv
+      // if (saveOutput) { // if we want to save file output
+      //   const outputPath = path.join(saveLocation, `${expiry}.csv`);
+      //   debug('SAVED', outputPath.replace(__dirname, ''));
+      //   await saveCsv(headerBodyToCsv(data[0], data[1]));
+      // }
 
-      // push to concatenated array with expiry string embedded in data row
-      concatenatedExpiries.push(_.map(data, row => ({ ...row, expiry })));
+      // push to concatenated array with expiry string added to data row
+      concatenatedExpiries.push({ thead: [...data[0], 'expiry'], tbody: _.map(data[1], r => [ ...r, expiry ]) });
 
       // return name and data length to be aggregated
       return [expiry, data.length];
@@ -244,19 +225,23 @@ async function sendToChannel(link, timer) {
   await timeout(_.random(2000, 5000));
 
   // save concatenated export
+  const concatenatedExpiriesCsv = headerBodyToCsv(concatenatedExpiries[0].thead, _.flatMap(concatenatedExpiries, 'tbody'));
   if (saveOutput) { // if we want to save file output
-    const concatenatedOutputPath = path.join(saveLocation, `${scrapeRun}_ALL.csv`);
-    await saveObjToCsv(concatenatedOutputPath, _.flatten(concatenatedExpiries));
+
+    // save to file
+    const concatenatedOutputPath = path.join(saveLocation, `${scrapeRun}_${INSTRUMENT.toUpperCase()}.csv`);
+    await saveCsv(concatenatedOutputPath, concatenatedExpiriesCsv);
     debug('SAVED', concatenatedOutputPath.replace(__dirname, ''));
+
   } else {
 
     // upload to S3
     const concatenatedOutputKey = path.join(scrapeRun, INSTRUMENT, `${scrapeRun}_${INSTRUMENT.toUpperCase()}.csv`);
-    const signedDownloadUrl = await s3.uploadObjCsv(concatenatedOutputKey, _.flatten(concatenatedExpiries));
+    const signedDownloadUrl = await s3.uploadCsv(concatenatedOutputKey, concatenatedExpiriesCsv);
     debug('SAVED', path.join(`s3://${process.env.S3_BUCKET}`, concatenatedOutputKey));
 
     // send discord hook
-    await sendToChannel(signedDownloadUrl, `${hrend[0]}s ${hrend[1] / 1000000}ms`);
+    if (sendWebhook) await sendToChannel(signedDownloadUrl, `${hrend[0]}s ${hrend[1] / 1000000}ms`);
 
   }
 
